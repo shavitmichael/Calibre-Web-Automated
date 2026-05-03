@@ -44,7 +44,6 @@ from .pagination import Pagination
 from .redirect import get_redirect_location
 from .cw_babel import get_available_locale
 from .usermanagement import login_required_if_no_ano
-from .kobo_sync_status import remove_synced_book
 from . import magic_shelf
 from .render_template import render_title_template
 from .kobo_sync_status import change_archived_books
@@ -218,8 +217,6 @@ def toggle_read(book_id):
 @user_login_required
 def toggle_archived(book_id):
     change_archived_books(book_id, message="Book {} archive bit toggled".format(book_id))
-    # Remove book from syncd books list to force resync (?)
-    remove_synced_book(book_id)
     return ""
 
 
@@ -2647,12 +2644,14 @@ def change_profile(kobo_support, hardcover_support, local_oauth_check, oauth_sta
         current_user.default_language = to_save.get("default_language", "all")
         current_user.locale = to_save.get("locale", "en")
         old_state = current_user.kobo_only_shelves_sync
-        # 1 -> 0: nothing has to be done
-        # 0 -> 1: all synced books have to be added to archived books, + currently synced shelfs which
-        # don't have to be synced have to be removed (added to Shelf archive)
         current_user.kobo_only_shelves_sync = int(to_save.get("kobo_only_shelves_sync") == "on") or 0
         if old_state == 0 and current_user.kobo_only_shelves_sync == 1:
+            # OFF→ON: archive non-shelf books on the device and remove non-kobo shelves.
             kobo_sync_status.update_on_sync_shelfs(current_user.id)
+        elif old_state == 1 and current_user.kobo_only_shelves_sync == 0:
+            # ON→OFF: mark all books visible in KBV so the device picks them up
+            # through the normal visibility_last_modified watermark.
+            kobo_sync_status.on_sync_shelves_disabled(current_user.id)
         current_user.opds_only_shelves_sync = int(to_save.get("opds_only_shelves_sync") == "on") or 0
         current_user.hardcover_token = to_save.get("hardcover_token","" ).replace("Bearer ","" ) or None
         # Auto-send and metadata fetch settings

@@ -89,9 +89,6 @@ def mark_book_modified(book, *, set_dirty=True, unsync=False):
     book.last_modified = datetime.now(timezone.utc)
     if set_dirty:
         calibre_db.set_metadata_dirty(book.id)
-    if unsync:
-        from . import kobo_sync_status
-        kobo_sync_status.remove_synced_book(book.id, all=True)
 
 
 def _directory_contains_only_nfs_placeholders(path):
