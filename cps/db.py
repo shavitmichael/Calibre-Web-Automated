@@ -825,13 +825,13 @@ class CalibreDB:
             for inst in cls.instances:
                 inst.init_session()
 
-            # Ensure progress syncing tables exist in metadata.db (book checksums)
+            # Ensure progress syncing tables exist in metadata.db (book checksums).
+            # Created unconditionally (not gated on KOReader sync being enabled) because
+            # the checksum table is written during any download with metadata embedding.
             from .progress_syncing.models import ensure_calibre_db_tables
-            from .progress_syncing.settings import is_koreader_sync_enabled
             if (
                 db_writable
                 and not os.getenv('NETWORK_SHARE_MODE', 'False').lower() in ('1', 'true', 'yes', 'on')
-                and is_koreader_sync_enabled()
             ):
                 ensure_calibre_db_tables(conn)
 
