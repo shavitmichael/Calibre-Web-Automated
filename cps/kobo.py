@@ -281,13 +281,14 @@ def HandleSyncRequest():
         if 'KEPUB' not in formats and config.config_kepubifypath and 'EPUB' in formats:
             helper.convert_book_format(book.Books.id, config.get_book_path(), 'EPUB', 'KEPUB', current_user.name)
 
-        kobo_reading_state = get_or_create_reading_state(book.Books.id)
+        kobo_reading_state = get_reading_state(book.Books.id)
         entitlement = {
             "BookEntitlement": create_book_entitlement(book.Books, archived=(book.is_archived==True)),
             "BookMetadata": get_metadata(book.Books),
         }
 
-        if kobo_reading_state.last_modified > sync_token.reading_state_last_modified:
+        if (kobo_reading_state is not None
+                and kobo_reading_state.last_modified > sync_token.reading_state_last_modified):
             entitlement["ReadingState"] = get_kobo_reading_state_response(book.Books, kobo_reading_state)
             new_reading_state_last_modified = max(new_reading_state_last_modified, kobo_reading_state.last_modified)
             reading_states_in_new_entitlements.append(book.Books.id)
@@ -1042,9 +1043,19 @@ def get_ub_read_status(kobo_read_status):
     return string_to_enum_map[kobo_read_status]
 
 
+def get_reading_state(book_id):
+    """Return the KoboReadingState for book_id/current_user, or None if it doesn't exist yet."""
+    book_read = ub.session.query(ub.ReadBook).filter(
+        ub.ReadBook.book_id == book_id,
+        ub.ReadBook.user_id == int(current_user.id),
+    ).one_or_none()
+    if book_read is None:
+        return None
+    return book_read.kobo_reading_state
+
+
 def get_or_create_reading_state(book_id):
-    book_read = ub.session.query(ub.ReadBook).filter(ub.ReadBook.book_id == book_id,
-                                                     ub.ReadBook.user_id == int(current_user.id)).one_or_none()
+    book_read = get_reading_state(book_id)
     if not book_read:
         book_read = ub.ReadBook(user_id=current_user.id, book_id=book_id)
     if not book_read.kobo_reading_state:
