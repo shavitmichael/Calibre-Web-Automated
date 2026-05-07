@@ -232,14 +232,20 @@ def HandleSyncRequest():
 
     log.debug("Kobo Sync: books last modified: {}".format(sync_token.books_last_modified))
 
+    rstate_join = and_(
+        db.Books.id == ub.KoboReadingState.book_id,
+        ub.KoboReadingState.user_id == current_user.id,
+    )
     if only_kobo_shelves:
         changed_entries = calibre_db.session.query(db.Books,
                                                    ub.ArchivedBook.last_modified,
                                                    ub.BookShelf.date_added,
-                                                   ub.ArchivedBook.is_archived)
+                                                   ub.ArchivedBook.is_archived,
+                                                   ub.KoboReadingState)
         changed_entries = (changed_entries
                            .join(db.Data).outerjoin(ub.ArchivedBook, and_(db.Books.id == ub.ArchivedBook.book_id,
                                                                           ub.ArchivedBook.user_id == current_user.id))
+                           .outerjoin(ub.KoboReadingState, rstate_join)
                            .filter(db.Books.id.notin_(calibre_db.session.query(ub.KoboSyncedBooks.book_id)
                                                       .filter(ub.KoboSyncedBooks.user_id == current_user.id)))
                           .filter(or_(
@@ -261,10 +267,12 @@ def HandleSyncRequest():
     else:
         changed_entries = calibre_db.session.query(db.Books,
                                                    ub.ArchivedBook.last_modified,
-                                                   ub.ArchivedBook.is_archived)
+                                                   ub.ArchivedBook.is_archived,
+                                                   ub.KoboReadingState)
         changed_entries = (changed_entries
                            .join(db.Data).outerjoin(ub.ArchivedBook, and_(db.Books.id == ub.ArchivedBook.book_id,
                                                                           ub.ArchivedBook.user_id == current_user.id))
+                           .outerjoin(ub.KoboReadingState, rstate_join)
                            .filter(db.Books.id.notin_(calibre_db.session.query(ub.KoboSyncedBooks.book_id)
                                                       .filter(ub.KoboSyncedBooks.user_id == current_user.id)))
                            .filter(calibre_db.common_filters(allow_show_archived=True))
@@ -281,7 +289,7 @@ def HandleSyncRequest():
         if 'KEPUB' not in formats and config.config_kepubifypath and 'EPUB' in formats:
             helper.convert_book_format(book.Books.id, config.get_book_path(), 'EPUB', 'KEPUB', current_user.name)
 
-        kobo_reading_state = get_reading_state(book.Books.id)
+        kobo_reading_state = book.KoboReadingState  # None when no record exists yet
         entitlement = {
             "BookEntitlement": create_book_entitlement(book.Books, archived=(book.is_archived==True)),
             "BookMetadata": get_metadata(book.Books),
