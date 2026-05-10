@@ -319,7 +319,8 @@ def HandleSyncRequest():
     cont_sync = has_more
     log.debug("Kobo Sync: more to sync: {}".format(has_more))
 
-    sync_shelves(sync_token, sync_results, only_kobo_shelves)
+    if not cont_sync:
+        sync_shelves(sync_token, sync_results, only_kobo_shelves)
 
     # Always emit DeletedTags for magic shelves that should NOT be on
     # the device — covers two distinct cases:
@@ -334,21 +335,23 @@ def HandleSyncRequest():
     # entries on previously-synced devices that retry DELETE forever
     # (B1 retry loop). Wire-confirmed against the live
     # "Test_E2E_Discovered" magic-shelf during the 2026-05-17 capture.
-    deletable_magic_shelves = ub.session.query(ub.MagicShelf).filter_by(
-        user_id=current_user.id,
-    )
-    if config.config_kobo_sync_magic_shelves:
-        deletable_magic_shelves = deletable_magic_shelves.filter_by(kobo_sync=False)
-    # else: global flag off, emit DeletedTag for all magic shelves
-    for shelf in deletable_magic_shelves.all():
-        sync_results.append({
-            "DeletedTag": {
-                "Tag": {
-                    "Id": shelf.uuid,
-                    "LastModified": convert_to_kobo_timestamp_string(shelf.last_modified)
+    # Gated on `not cont_sync` so tags ship only on the last page.
+    if not cont_sync:
+        deletable_magic_shelves = ub.session.query(ub.MagicShelf).filter_by(
+            user_id=current_user.id,
+        )
+        if config.config_kobo_sync_magic_shelves:
+            deletable_magic_shelves = deletable_magic_shelves.filter_by(kobo_sync=False)
+        # else: global flag off, emit DeletedTag for all magic shelves
+        for shelf in deletable_magic_shelves.all():
+            sync_results.append({
+                "DeletedTag": {
+                    "Tag": {
+                        "Id": shelf.uuid,
+                        "LastModified": convert_to_kobo_timestamp_string(shelf.last_modified)
+                    }
                 }
-            }
-        })
+            })
 
     # Add magic shelves as collections (only when feature is enabled)
     if config.config_kobo_sync_magic_shelves:
