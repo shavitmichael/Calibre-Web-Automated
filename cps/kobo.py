@@ -271,9 +271,6 @@ def HandleSyncRequest():
             }
             if is_visible and kobo_reading_state is not None:
                 new_entry["ReadingState"] = get_kobo_reading_state_response(book.Books, kobo_reading_state)
-                if kobo_reading_state.last_modified <= pagination.snapshot_ts:
-                    pagination.reading_state_max_last_modified = max(
-                        pagination.reading_state_max_last_modified, kobo_reading_state.last_modified)
             sync_results.append({"NewEntitlement": new_entry})
         elif visibility_changed:
             sync_results.append({"ChangedEntitlement": {
@@ -288,9 +285,6 @@ def HandleSyncRequest():
                     sync_results.append({"ChangedReadingState": {
                         "ReadingState": get_kobo_reading_state_response(book.Books, kobo_reading_state),
                     }})
-                    if kobo_reading_state.last_modified <= pagination.snapshot_ts:
-                        pagination.reading_state_max_last_modified = max(
-                            pagination.reading_state_max_last_modified, kobo_reading_state.last_modified)
         elif is_visible:
             # Already visible book that's not newly created, must be a modified book or modified reading state:
             if metadata_changed:
@@ -301,9 +295,6 @@ def HandleSyncRequest():
                 sync_results.append({"ChangedReadingState": {
                     "ReadingState": get_kobo_reading_state_response(book.Books, kobo_reading_state),
                 }})
-                if kobo_reading_state.last_modified <= pagination.snapshot_ts:
-                    pagination.reading_state_max_last_modified = max(
-                        pagination.reading_state_max_last_modified, kobo_reading_state.last_modified)
 
         # Advance all per-signal watermarks unconditionally each iteration.
         if book_last_modified_naive and book_last_modified_naive <= pagination.snapshot_ts:
@@ -313,6 +304,9 @@ def HandleSyncRequest():
         if vis_candidates:
             pagination.visibility_max_last_modified = max(
                 pagination.visibility_max_last_modified, max(vis_candidates))
+        if kobo_reading_state is not None and kobo_reading_state.last_modified <= pagination.snapshot_ts:
+            pagination.reading_state_max_last_modified = max(
+                pagination.reading_state_max_last_modified, kobo_reading_state.last_modified)
         pagination.books_max_last_created = max(pagination.books_max_last_created, ts_created)
         pagination.books_last_id = book.Books.id
 
