@@ -312,7 +312,51 @@ def HandleSyncRequest():
         pagination.books_last_id = book.Books.id
 
     cont_sync = has_more
-    log.debug("Kobo Sync: more to sync: {}".format(has_more))
+    log.debug("Kobo Sync: more book pages: {}".format(has_more))
+
+    # Send deleted-book IsRemoved entries only after the books section is fully paged,
+    # so that the device receives book metadata before any removal signal.
+    if not has_more:
+        # Emit DeletedEntitlement tombstones for books hard-deleted from CW
+        # (B3 fix — closes the orphan-book-on-device gap from the 2026-05-17
+        # MITM capture). editbooks.delete_whole_book captures (user_id,
+        # book_uuid, deleted_at) into kobo_deleted_book before tearing down
+        # the metadata.db row; here we play those tombstones back to each
+        # affected device as DeletedEntitlement and advance
+        # deleted_books_last_modified past the tombstone so the device sees each
+        # one exactly once. Page-cap with SYNC_ITEM_LIMIT so a mass-delete
+        # doesn't blow past the device's sync-response size limit.
+        pending_deletions = (ub.session.query(ub.KoboDeletedBook)
+                        .filter(ub.KoboDeletedBook.user_id == current_user.id)
+                        .filter(ub.KoboDeletedBook.deleted_at > sync_token.deleted_books_last_modified)
+                        .filter(ub.KoboDeletedBook.deleted_at <= pagination.snapshot_ts)
+                        .filter(ub.KoboDeletedBook.id > pagination.deleted_books_last_id)
+                        .order_by(ub.KoboDeletedBook.id)
+                        .limit(SYNC_ITEM_LIMIT + 1)
+                        .all())
+        has_more_deleted = len(pending_deletions) > SYNC_ITEM_LIMIT
+        pending_deletions = pending_deletions[:SYNC_ITEM_LIMIT]
+        log.debug("Kobo Sync: deleted books to sync: %s (more=%s)", len(pending_deletions), pending_deletions)
+
+        for tombstone in pending_deletions:
+            sync_results.append({"NewEntitlement": {
+            "DeletedEntitlement": {
+                "BookEntitlement": {
+                    "Id": tombstone.book_uuid,
+                    "RevisionId": tombstone.book_uuid,
+                    "CrossRevisionId": tombstone.book_uuid,
+                }
+            }
+            }})
+            ta = tombstone.date_deleted
+            if hasattr(ta, "replace") and getattr(ta, "tzinfo", None) is not None:
+                ta = ta.replace(tzinfo=None)
+            if ta and ta <= pagination.snapshot_ts:
+                pagination.deleted_books_max_date_deleted = max(
+                    pagination.deleted_books_max_date_deleted, ta)
+            pagination.deleted_books_last_id = ta.book_id
+
+        cont_sync = has_more_deleted
 
     if not cont_sync:
         sync_shelves(sync_token, sync_results, only_kobo_shelves)
@@ -398,6 +442,8 @@ def HandleSyncRequest():
             sync_token.reading_state_last_modified, pagination.reading_state_max_last_modified)
         sync_token.visibility_last_modified = max(
             sync_token.visibility_last_modified, pagination.visibility_max_last_modified)
+        sync_token.deleted_books_last_modified = max(
+            sync_token.deleted_books_last_modified, pagination.deleted_books_max_date_deleted)
         sync_token.pagination = None
 
     return generate_sync_response(sync_token, sync_results, cont_sync)
@@ -512,6 +558,25 @@ def create_book_entitlement(book, archived):
         "LastModified": convert_to_kobo_timestamp_string(book.last_modified),
         "OriginCategory": "Imported",
         "RevisionId": book_uuid,
+        "Status": "Active",
+    }
+
+
+def create_deleted_book_entitlement(book_uuid, date_deleted):
+    uuid_str = str(book_uuid)
+    ts = convert_to_kobo_timestamp_string(date_deleted)
+    return {
+        "Accessibility": "Full",
+        "ActivePeriod": {"From": convert_to_kobo_timestamp_string(datetime.now(timezone.utc))},
+        "Created": ts,
+        "CrossRevisionId": uuid_str,
+        "Id": uuid_str,
+        "IsRemoved": True,
+        "IsHiddenFromArchive": False,
+        "IsLocked": False,
+        "LastModified": ts,
+        "OriginCategory": "Imported",
+        "RevisionId": uuid_str,
         "Status": "Active",
     }
 

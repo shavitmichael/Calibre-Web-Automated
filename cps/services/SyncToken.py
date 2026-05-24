@@ -62,6 +62,8 @@ class SyncTokenPagination:
         reading_state_last_id=0,
         reading_state_max_last_modified=datetime.min,
         visibility_max_last_modified=datetime.min,
+        deleted_books_last_id=0,
+        deleted_books_max_date_deleted=datetime.min,
     ):
         self.snapshot_ts = snapshot_ts
         self.books_last_id = books_last_id
@@ -70,6 +72,8 @@ class SyncTokenPagination:
         self.reading_state_last_id = reading_state_last_id
         self.reading_state_max_last_modified = reading_state_max_last_modified
         self.visibility_max_last_modified = visibility_max_last_modified
+        self.deleted_books_last_id = deleted_books_last_id
+        self.deleted_books_max_date_deleted = deleted_books_max_date_deleted
 
     def to_dict(self):
         return {
@@ -80,6 +84,8 @@ class SyncTokenPagination:
             "reading_state_last_id": self.reading_state_last_id,
             "reading_state_max_last_modified": to_epoch_timestamp(self.reading_state_max_last_modified),
             "visibility_max_last_modified": to_epoch_timestamp(self.visibility_max_last_modified),
+            "deleted_books_last_id": self.deleted_books_last_id,
+            "deleted_books_max_date_deleted": to_epoch_timestamp(self.deleted_books_max_date_deleted),
         }
 
     @classmethod
@@ -94,11 +100,14 @@ class SyncTokenPagination:
             reading_state_last_id=int(data.get("reading_state_last_id", 0) or 0),
             reading_state_max_last_modified=get_datetime_from_json(data, "reading_state_max_last_modified"),
             visibility_max_last_modified=get_datetime_from_json(data, "visibility_max_last_modified"),
+            deleted_books_last_id=int(data.get("deleted_books_last_id", 0) or 0),
+            deleted_books_max_date_deleted=get_datetime_from_json(data, "deleted_books_max_date_deleted"),
         )
 
     def __str__(self):
         return ("snap={},books=(id>{},max_lm={},max_lc={}),"
-                "rstate=(id>{},max_lm={}),vis_max_lm={}").format(
+                "rstate=(id>{},max_lm={}),vis_max_lm={},"
+                "deleted=(id>{},max_dd={})").format(
             self.snapshot_ts,
             self.books_last_id,
             self.books_max_last_modified,
@@ -106,6 +115,8 @@ class SyncTokenPagination:
             self.reading_state_last_id,
             self.reading_state_max_last_modified,
             self.visibility_max_last_modified,
+            self.deleted_books_last_id,
+            self.deleted_books_max_date_deleted,
         )
 
 
@@ -125,10 +136,11 @@ class SyncToken:
     """
 
     SYNC_TOKEN_HEADER = "x-kobo-synctoken"  # nosec
-    VERSION = "1-2-0"
+    VERSION = "1-3-0"
     LAST_MODIFIED_ADDED_VERSION = "1-1-0"
     PAGINATION_ADDED_VERSION = "1-2-0"
     VISIBILITY_ADDED_VERSION = "1-2-0"
+    DELETED_BOOKS_ADDED_VERSION = "1-3-0"
     MIN_VERSION = "1-0-0"
 
     token_schema = {
@@ -166,6 +178,21 @@ class SyncToken:
             "pagination": {"type": ["object", "null"]},
         },
     }
+    # v3 (>= "1-3-0"): adds deleted_books_last_modified to track the DeletedBook table,
+    # enabling Kobo devices to receive IsRemoved=True for books deleted from the library.
+    data_schema_v3 = {
+        "type": "object",
+        "properties": {
+            "raw_kobo_store_token": {"type": "string"},
+            "books_last_modified": {"type": "number"},
+            "books_last_created": {"type": "number"},
+            "visibility_last_modified": {"type": "number"},
+            "reading_state_last_modified": {"type": "number"},
+            "tags_last_modified": {"type": "number"},
+            "pagination": {"type": ["object", "null"]},
+            "deleted_books_last_modified": {"type": "number"},
+        },
+    }
 
     def __init__(
         self,
@@ -175,6 +202,7 @@ class SyncToken:
         visibility_last_modified=datetime.min,
         reading_state_last_modified=datetime.min,
         tags_last_modified=datetime.min,
+        deleted_books_last_modified=datetime.min,
         pagination=None,
         migrated_from_v1=False,
     ):  # nosec
@@ -184,6 +212,7 @@ class SyncToken:
         self.visibility_last_modified = visibility_last_modified
         self.reading_state_last_modified = reading_state_last_modified
         self.tags_last_modified = tags_last_modified
+        self.deleted_books_last_modified = deleted_books_last_modified
         self.pagination = pagination
         self.migrated_from_v1 = migrated_from_v1  # transient; not serialized into build_sync_token()
 
@@ -211,12 +240,19 @@ class SyncToken:
             data_json = sync_token_json["data"]
             # v1 tokens (< 1-2-0) track archive_last_modified; v2 (>= 1-2-0) replaced it with
             # visibility_last_modified, which covers both KoboBookVisibility and ArchivedBook.
-            # Pagination and visibility landed in the same release, so the version boundary is the same.
+            # v3 (>= 1-3-0) adds deleted_books_last_modified for the DeletedBook table.
             is_v1 = token_version < SyncToken.VISIBILITY_ADDED_VERSION
-            validate(data_json, SyncToken.data_schema_v1 if is_v1 else SyncToken.data_schema_v2)
+            is_v3 = token_version >= SyncToken.DELETED_BOOKS_ADDED_VERSION
+            if is_v1:
+                schema = SyncToken.data_schema_v1
+            elif is_v3:
+                schema = SyncToken.data_schema_v3
+            else:
+                schema = SyncToken.data_schema_v2
+            validate(data_json, schema)
             raw_kobo_store_token = data_json.get("raw_kobo_store_token", "")
-        except (exceptions.ValidationError, ValueError, TypeError, KeyError):
-            log.error("Sync token contents do not follow the expected json schema.")
+        except (exceptions.ValidationError, ValueError, TypeError, KeyError) as err:
+            log.error("Sync token contents do not follow the expected json schema, err: %s", err)
             return SyncToken()
         try:
             books_last_modified = get_datetime_from_json(data_json, "books_last_modified")
@@ -232,6 +268,12 @@ class SyncToken:
                 visibility_last_modified = get_datetime_from_json(data_json, "visibility_last_modified")
             reading_state_last_modified = get_datetime_from_json(data_json, "reading_state_last_modified")
             tags_last_modified = get_datetime_from_json(data_json, "tags_last_modified")
+            # deleted_books_last_modified was added in v3; old tokens default to datetime.min
+            # so that all DeletedBook rows are included on the first sync after an upgrade.
+            deleted_books_last_modified = (
+                get_datetime_from_json(data_json, "deleted_books_last_modified")
+                if is_v3 else datetime.min
+            )
         except TypeError:
             log.error("SyncToken timestamps don't parse to a datetime.")
             return SyncToken(raw_kobo_store_token=raw_kobo_store_token)
@@ -248,6 +290,7 @@ class SyncToken:
             visibility_last_modified=visibility_last_modified,
             reading_state_last_modified=reading_state_last_modified,
             tags_last_modified=tags_last_modified,
+            deleted_books_last_modified=deleted_books_last_modified,
             pagination=pagination,
             migrated_from_v1=is_v1,
         )
@@ -273,18 +316,20 @@ class SyncToken:
                 "visibility_last_modified": to_epoch_timestamp(self.visibility_last_modified),
                 "reading_state_last_modified": to_epoch_timestamp(self.reading_state_last_modified),
                 "tags_last_modified": to_epoch_timestamp(self.tags_last_modified),
+                "deleted_books_last_modified": to_epoch_timestamp(self.deleted_books_last_modified),
                 "pagination": self.pagination.to_dict() if self.pagination is not None else None,
             },
         }
         return b64encode_json(token)
 
     def __str__(self):
-        return "{},{},{},{},{},{},pagination={}".format(
+        return "{},{},{},{},{},{},deleted={},pagination={}".format(
             self.books_last_created,
             self.books_last_modified,
             self.visibility_last_modified,
             self.reading_state_last_modified,
             self.tags_last_modified,
             self.raw_kobo_store_token,
+            self.deleted_books_last_modified,
             self.pagination,
         )
